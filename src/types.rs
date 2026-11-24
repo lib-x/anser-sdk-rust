@@ -256,3 +256,117 @@ pub struct MessageDetail {
     pub inbox_recipient: Option<String>,
     pub deliveries: Vec<Delivery>,
 }
+
+/// Select a stored template by ID or name. Built-in templates have stable IDs.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TemplateRef {
+    TemplateId(String),
+    TemplateName(String),
+}
+
+/// Publish a notification without including template source content.
+#[derive(Clone, Serialize)]
+pub struct TemplatePublish {
+    #[serde(flatten)]
+    pub template: TemplateRef,
+    pub variables: std::collections::BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topic_password: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channels: Option<Vec<Selector>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<Strategy>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Attachment>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extras: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expire_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub callback_url: Option<String>,
+}
+
+impl TemplatePublish {
+    #[must_use]
+    pub fn new(
+        template: TemplateRef,
+        variables: std::collections::BTreeMap<String, String>,
+    ) -> Self {
+        Self {
+            template,
+            variables,
+            topic_password: None,
+            channels: None,
+            strategy: None,
+            tags: Vec::new(),
+            url: None,
+            level: None,
+            attachments: Vec::new(),
+            extras: None,
+            expire_at: None,
+            callback_url: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TemplateFormat {
+    Text,
+    Markdown,
+}
+
+#[derive(Clone, Serialize)]
+pub struct TemplateInput {
+    pub name: String,
+    pub title: String,
+    pub body: String,
+    pub format: TemplateFormat,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shared: Option<bool>,
+}
+
+#[derive(Clone, Deserialize)]
+pub struct Template {
+    pub id: String,
+    pub name: String,
+    pub title: String,
+    pub body: String,
+    pub format: TemplateFormat,
+    pub variables: Vec<String>,
+    pub shared: bool,
+    pub builtin: bool,
+    pub can_edit: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Serialize)]
+pub struct SpeechSend {
+    pub config: SpeechConfig,
+    pub message: Message,
+    pub destination: SpeechDestination,
+}
+
+#[derive(Serialize)]
+pub struct SpeechConfig {
+    pub server_url: String,
+    pub api_key: String,
+    pub model: String,
+    pub voice: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SpeechDestination {
+    Inbox { username: String },
+    Topic { name: String },
+    Channels,
+}

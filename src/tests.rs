@@ -355,3 +355,118 @@ async fn totp_methods_send_codes_only_to_their_intended_endpoints() {
         json!({"password":"fixture-pass", "code":"recovery-fixture"})
     );
 }
+
+#[tokio::test]
+async fn publishes_a_template_with_no_source_and_reuses_the_key() {
+    let (base, requests) = mock::serve_sequence(&[
+        ("429 Too Many Requests", "Retry-After: 0\r\n", RATE_LIMIT),
+        ("202 Accepted", "", RECEIPT),
+    ])
+    .await;
+    let client = fixture_client(base.as_str());
+    let mut publish = TemplatePublish::new(
+        TemplateRef::TemplateName("builtin.deployment".into()),
+        [("service".into(), "api".into())].into(),
+    );
+    publish.topic_password = Some("fixture-password".into());
+    client
+        .publish_template("alerts", &publish, &SendOptions::default())
+        .await
+        .unwrap();
+    let requests = requests.await.unwrap();
+    assert_eq!(
+        header(&requests[0], "idempotency-key"),
+        header(&requests[1], "idempotency-key")
+    );
+    assert_eq!(requests[0].body, requests[1].body);
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(
+        body,
+        json!({
+            "template_name":"builtin.deployment","variables":{"service":"api"},"topic_password":"fixture-password"
+        })
+    );
+}
+
+#[tokio::test]
+async fn manages_templates_over_the_versioned_paths() {
+    const TEMPLATE: &str = r#"{"id":"a/b","name":"deploy","title":"Update","body":"{{service}}","format":"text","variables":["service"],"shared":false,"builtin":false,"can_edit":true,"created_at":1000,"updated_at":1000}"#;
+    let (base, requests) = mock::serve_sequence(&[
+        ("200 OK", "", r#"{"items":[],"next_cursor":null}"#),
+        ("201 Created", "", TEMPLATE),
+        ("200 OK", "", TEMPLATE),
+        ("200 OK", "", TEMPLATE),
+        ("204 No Content", "", ""),
+    ])
+    .await;
+    let client = fixture_client(base.as_str());
+    let input = TemplateInput {
+        name: "deploy".into(),
+        title: "Update".into(),
+        body: "{{service}}".into(),
+        format: TemplateFormat::Text,
+        shared: None,
+    };
+    assert!(
+        client
+            .templates(&PageOptions::default())
+            .await
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    let template = client.create_template(&input).await.unwrap();
+    assert_eq!(
+        client.template(&template.id).await.unwrap().variables,
+        ["service"]
+    );
+    assert_eq!(
+        client
+            .update_template(&template.id, &input)
+            .await
+            .unwrap()
+            .name,
+        "deploy"
+    );
+    client.delete_template(&template.id).await.unwrap();
+    let requests = requests.await.unwrap();
+    for (request, method) in requests[2..].iter().zip(["GET", "PUT", "DELETE"]) {
+        assert!(
+            request
+                .headers
+                .starts_with(&format!("{method} /v1/templates/a%2Fb "))
+        );
+    }
+}
+
+#[tokio::test]
+async fn sends_speech_with_an_explicit_idempotency_key() {
+    let (base, request) = mock::serve("201 Created", "", RECEIPT).await;
+    let client = fixture_client(base.as_str());
+    let input = SpeechSend {
+        config: SpeechConfig {
+            server_url: "https://speech.example".into(),
+            api_key: "fixture-speech".into(),
+            model: "tts-1".into(),
+            voice: "alloy".into(),
+        },
+        message: Message {
+            body: "Build ready".into(),
+            ..Message::default()
+        },
+        destination: SpeechDestination::Inbox {
+            username: "alice".into(),
+        },
+    };
+    let receipt = client.send_speech(&input, Some("speech-17")).await.unwrap();
+    assert_eq!(receipt.message_id, "fixture-id");
+    let request = request.await.unwrap();
+    assert!(request.headers.starts_with("POST /v1/speech/send "));
+    assert_eq!(header(&request, "Idempotency-Key"), Some("speech-17"));
+    let body: Value = serde_json::from_slice(&request.body).unwrap();
+    assert_eq!(
+        body["destination"],
+        json!({"kind":"inbox","username":"alice"})
+    );
+    assert_eq!(body["config"]["api_key"], "fixture-speech");
+}

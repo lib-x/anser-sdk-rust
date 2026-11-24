@@ -163,7 +163,8 @@ impl Client {
         message: &Publish,
         options: &SendOptions,
     ) -> Result<Receipt, Error> {
-        self.enqueue(&["send"], message, options).await
+        self.enqueue(&["send"], &PublishWire::new(message), options)
+            .await
     }
 
     pub async fn publish(&self, topic: &str, message: &Publish) -> Result<Receipt, Error> {
@@ -177,14 +178,89 @@ impl Client {
         message: &Publish,
         options: &SendOptions,
     ) -> Result<Receipt, Error> {
+        self.enqueue(
+            &["topics", topic, "publish"],
+            &PublishWire::new(message),
+            options,
+        )
+        .await
+    }
+
+    /// Synthesize and deliver an MP3 through a global administrator credential.
+    ///
+    /// Repeat a caller-supplied idempotency key after an ambiguous response.
+    pub async fn send_speech(
+        &self,
+        input: &SpeechSend,
+        idempotency_key: Option<&str>,
+    ) -> Result<Receipt, Error> {
+        let mut request = self
+            .request(Method::POST, &["speech", "send"], true)?
+            .json(input);
+        if let Some(key) = idempotency_key {
+            request = request.header("Idempotency-Key", idempotency_header(key)?);
+        }
+        // A transient response can occur while the provider is still synthesizing.
+        self.execute(request, false).await
+    }
+
+    /// Sends a rendered template through explicit targets or the default route.
+    pub async fn send_template(
+        &self,
+        message: &TemplatePublish,
+        options: &SendOptions,
+    ) -> Result<Receipt, Error> {
+        self.enqueue(&["send"], message, options).await
+    }
+
+    /// Publishes a rendered template to a topic.
+    pub async fn publish_template(
+        &self,
+        topic: &str,
+        message: &TemplatePublish,
+        options: &SendOptions,
+    ) -> Result<Receipt, Error> {
         self.enqueue(&["topics", topic, "publish"], message, options)
             .await
+    }
+
+    pub async fn templates(&self, options: &PageOptions) -> Result<Page<Template>, Error> {
+        let request = self.request(Method::GET, &["templates"], true)?;
+        self.execute(with_page(request, options), true).await
+    }
+
+    pub async fn template(&self, id: &str) -> Result<Template, Error> {
+        let request = self.request(Method::GET, &["templates", id], true)?;
+        self.execute(request, true).await
+    }
+
+    pub async fn create_template(&self, input: &TemplateInput) -> Result<Template, Error> {
+        let request = self
+            .request(Method::POST, &["templates"], true)?
+            .json(input);
+        self.execute(request, false).await
+    }
+
+    pub async fn update_template(
+        &self,
+        id: &str,
+        input: &TemplateInput,
+    ) -> Result<Template, Error> {
+        let request = self
+            .request(Method::PUT, &["templates", id], true)?
+            .json(input);
+        self.execute(request, false).await
+    }
+
+    pub async fn delete_template(&self, id: &str) -> Result<(), Error> {
+        let request = self.request(Method::DELETE, &["templates", id], true)?;
+        self.execute(request, false).await
     }
 
     async fn enqueue(
         &self,
         path: &[&str],
-        message: &Publish,
+        message: &impl Serialize,
         options: &SendOptions,
     ) -> Result<Receipt, Error> {
         let mut request = self.request(Method::POST, path, true)?;
@@ -204,10 +280,7 @@ impl Client {
             &generated
         };
         let key = idempotency_header(key)?;
-        let request = request.header("Idempotency-Key", key).json(&PublishWire {
-            request: message,
-            topic_password: message.topic_password.as_deref(),
-        });
+        let request = request.header("Idempotency-Key", key).json(message);
         self.execute(request, true).await
     }
 
@@ -423,6 +496,7 @@ fn with_page(mut request: RequestBuilder, options: &PageOptions) -> RequestBuild
 #[derive(Clone, Deserialize)]
 pub struct InboxItem {
     pub id: i64,
+    pub audio_path: Option<String>,
     pub from_username: Option<String>,
     pub topic: Option<String>,
     pub title: String,
@@ -489,6 +563,15 @@ struct PublishWire<'a> {
     request: &'a Publish,
     #[serde(skip_serializing_if = "Option::is_none")]
     topic_password: Option<&'a str>,
+}
+
+impl<'a> PublishWire<'a> {
+    fn new(request: &'a Publish) -> Self {
+        Self {
+            request,
+            topic_password: request.topic_password.as_deref(),
+        }
+    }
 }
 
 #[derive(Serialize)]
